@@ -4,6 +4,7 @@ process_args: ?[][:0]u8,
 args: []const []const u8,
 index: usize,
 consumed: bool,
+positionals_only: bool,
 
 pub fn initArgs(gpa: std.mem.Allocator) !Args {
     const args = try std.process.argsAlloc(gpa);
@@ -12,6 +13,7 @@ pub fn initArgs(gpa: std.mem.Allocator) !Args {
         .args = args[1..],
         .index = 0,
         .consumed = false,
+        .positionals_only = false,
     };
 }
 
@@ -21,6 +23,7 @@ pub fn initSlice(args: []const []const u8) Args {
         .args = args,
         .index = 0,
         .consumed = false,
+        .positionals_only = false,
     };
 }
 
@@ -36,7 +39,7 @@ pub fn next(args: *Args) bool {
 }
 
 pub fn flag(args: *Args, names: []const []const u8) bool {
-    if (args.consumed)
+    if (args.consumed or args.positionals_only)
         return false;
 
     for (names) |name| {
@@ -52,7 +55,7 @@ pub fn flag(args: *Args, names: []const []const u8) bool {
 }
 
 pub fn option(args: *Args, names: []const []const u8) ?[]const u8 {
-    if (args.consumed)
+    if (args.consumed or args.positionals_only)
         return null;
 
     const arg = args.args[args.index];
@@ -79,7 +82,14 @@ pub fn positional(args: *Args) ?[]const u8 {
     if (args.consumed)
         return null;
 
-    return args.eat();
+    const res = args.eat();
+    args.consumed = true;
+
+    if (!args.positionals_only and std.mem.eql(u8, res, "--")) {
+        args.positionals_only = true;
+        return null;
+    }
+    return res;
 }
 
 fn eat(args: *Args) []const u8 {
@@ -197,6 +207,59 @@ test "all" {
     try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
     try expectEqualOptionalString("c_value", args.option(&.{ "-c", "--center" }));
     try expectEqualOptionalString(null, args.positional());
+
+    try std.testing.expect(args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString("command", args.positional());
+
+    try std.testing.expect(!args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString(null, args.positional());
+}
+
+test "all positionals" {
+    var args = Args.initSlice(&.{
+        "--",
+        "-a",
+        "--beta",
+        "b_value",
+        "-c=c_value",
+        "command",
+    });
+    defer args.deinit(std.testing.allocator);
+
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString(null, args.positional());
+
+    try std.testing.expect(args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString("-a", args.positional());
+
+    try std.testing.expect(args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString("--beta", args.positional());
+
+    try std.testing.expect(args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString("b_value", args.positional());
+
+    try std.testing.expect(args.next());
+    try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-b", "--beta" }));
+    try expectEqualOptionalString(null, args.option(&.{ "-c", "--center" }));
+    try expectEqualOptionalString("-c=c_value", args.positional());
 
     try std.testing.expect(args.next());
     try std.testing.expect(!args.flag(&.{ "-a", "--alpha" }));
